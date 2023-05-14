@@ -95,7 +95,9 @@ long choose(int n, int k)
 typedef struct
 {
 	int *team_tally;
+	int team_score;
 	int *pairs_tally;
+	int pair_score;
 } score_metadata;
 
 void create_score_metadata(score_metadata *target, search_metadata const *search_metadata)
@@ -205,16 +207,17 @@ void score(node *active_node, search_metadata const *search_metadata)
 		search_metadata);
 
 	active_node->score = 0;
-	flat_score_func(active_node->score_metadata.team_tally,
-					search_metadata->request.teams,
-					active_node->match->teams,
-					4,
-					search_metadata->total_matches);
-	active_node->score += flat_score_func(active_node->score_metadata.pairs_tally,
-										  search_metadata->pairings_list_size,
-										  active_node->match->pairs,
-										  6,
-										  search_metadata->total_matches);
+	active_node->score_metadata.team_score = flat_score_func(active_node->score_metadata.team_tally,
+															 search_metadata->request.teams,
+															 active_node->match->teams,
+															 4,
+															 search_metadata->total_matches);
+	active_node->score_metadata.pair_score = flat_score_func(active_node->score_metadata.pairs_tally,
+															 search_metadata->pairings_list_size,
+															 active_node->match->pairs,
+															 6,
+															 search_metadata->total_matches);
+	active_node->score = active_node->score_metadata.pair_score;
 }
 
 node **create_trail(node *leaf_node, int length)
@@ -231,6 +234,58 @@ node **create_trail(node *leaf_node, int length)
 		length--;
 	}
 	return trail;
+}
+
+void TopDownSplitMerge(node **B, int iBegin, int iEnd, node **A, int compare(node *a, node *b))
+{
+	if (iEnd - iBegin <= 1)
+		return;
+
+	int iMiddle = (iEnd + iBegin) / 2; // iMiddle = mid point
+	// recursively sort both runs from array A[] into B[]
+	TopDownSplitMerge(A, iBegin, iMiddle, B, compare); // sort the left  run
+	TopDownSplitMerge(A, iMiddle, iEnd, B, compare);   // sort the right run
+	// merge the resulting runs from array B[] into A[]
+
+	int i = iBegin, j = iMiddle;
+
+	// While there are elements in the left or right runs...
+	for (int k = iBegin; k < iEnd; k++)
+	{
+		// If left run head exists and is <= existing right run head.
+		if (i < iMiddle && (j >= iEnd || compare(B[i], B[j]) < 0))
+		{
+			A[k] = B[i];
+			i = i + 1;
+		}
+		else
+		{
+			A[k] = B[j];
+			j = j + 1;
+		}
+	}
+}
+
+int compare_team_score(node *a, node *b)
+{
+	return b->score_metadata.team_score - a->score_metadata.team_score;
+}
+
+int compare_pair_score(node *a, node *b)
+{
+	return b->score_metadata.pair_score - a->score_metadata.pair_score;
+}
+
+void sort(node const **nodes, int size, int compare(node *a, node *b))
+{
+	node const **sorting_nodes = malloc(sizeof(*sorting_nodes) * size);
+	for (int i = 0; i < size; i++)
+	{
+		sorting_nodes[i] = nodes[i];
+	}
+
+	TopDownSplitMerge(sorting_nodes, 0, size, nodes, compare);
+	free(sorting_nodes);
 }
 
 void create_children(node *parent_node, search_metadata const *search_metadata)
@@ -303,60 +358,10 @@ void create_children(node *parent_node, search_metadata const *search_metadata)
 		parent_node->sorted_children[i] = parent_node->children + i;
 	}
 
-	sort(parent_node->sorted_children, parent_node->children_size);
+	sort(parent_node->sorted_children, parent_node->children_size, compare_pair_score);
+	sort(parent_node->sorted_children, parent_node->children_size, compare_team_score);
 
 	parent_node->last_searched_child = parent_node->sorted_children + parent_node->children_size;
-}
-
-void TopDownMerge(node const **A, int iBegin, int iMiddle, int iEnd, node const **B)
-{
-	int i = iBegin, j = iMiddle;
-
-	// While there are elements in the left or right runs...
-	for (int k = iBegin; k < iEnd; k++)
-	{
-		// If left run head exists and is <= existing right run head.
-		if (i < iMiddle && (j >= iEnd || A[i]->score > A[j]->score))
-		{
-			B[k] = A[i];
-			i = i + 1;
-		}
-		else
-		{
-			B[k] = A[j];
-			j = j + 1;
-		}
-	}
-}
-
-void TopDownSplitMerge(node **B, int iBegin, int iEnd, node **A)
-{
-	if (iEnd - iBegin <= 1)
-		return;
-
-	int iMiddle = (iEnd + iBegin) / 2; // iMiddle = mid point
-	// recursively sort both runs from array A[] into B[]
-	TopDownSplitMerge(A, iBegin, iMiddle, B); // sort the left  run
-	TopDownSplitMerge(A, iMiddle, iEnd, B);	  // sort the right run
-	// merge the resulting runs from array B[] into A[]
-	TopDownMerge(B, iBegin, iMiddle, iEnd, A);
-}
-
-void sort(node const **nodes, int size)
-{
-	node const **sorting_nodes = malloc(sizeof(*sorting_nodes) * size);
-	for (int i = 0; i < size; i++)
-	{
-		sorting_nodes[i] = nodes[i];
-	}
-
-	TopDownSplitMerge(sorting_nodes, 0, size, nodes);
-	free(sorting_nodes);
-	// for (int i = 0; i < size; i++)
-	// {
-	// 	printf("%d:", nodes[i]->score);
-	// }
-	// printf("\n");
 }
 
 void write_result(node const *result_node, search_metadata const *search_metadata)
@@ -528,18 +533,18 @@ int main()
 
 	printf("total_matches %d\n", search_metadata.total_matches);
 
-	int best_score = 100000;
+	int best_score = 1;
 	int processed_nodes = 0;
 	int steps = 0;
 
 	while (active_node != NULL)
 	{
-		if (processed_nodes / 10000 > 0)
-		{
-			steps += (processed_nodes / 10000);
-			processed_nodes %= 10000;
-			printf("%d\r", steps);
-		}
+		// if (processed_nodes / 10000 > 0)
+		// {
+		// 	steps += (processed_nodes / 10000);
+		// 	processed_nodes %= 10000;
+		// 	// printf("%d\r", steps);
+		// }
 
 		if (search_metadata.active_depth == search_metadata.total_matches)
 		{
@@ -558,7 +563,6 @@ int main()
 			}
 
 			mark_expored(active_node);
-			processed_nodes++;
 			search_metadata.active_depth--;
 			active_node = active_node->parent;
 
@@ -568,7 +572,9 @@ int main()
 		if (active_node->sorted_children == NULL)
 		{
 			// printf("create: parent(%x) active(%x), d(%d)\n", active_node->parent, active_node, search_metadata.active_depth);
+			processed_nodes += active_node->children_size;
 			create_children(active_node, &search_metadata);
+			printf("%d\r", search_metadata.active_depth);
 		}
 
 		if (active_node->children_size == 0)
@@ -582,27 +588,24 @@ int main()
 
 		if (active_node->last_searched_child == active_node->sorted_children)
 		{
-			node *n = active_node;
-			int i = 0;
-			while (n->parent != NULL)
-			{
-				i++;
-				n = n->parent;
-			}
-			if (search_metadata.active_depth > 2)
-			{
-				// printf("free: x(%d) parent(%x) active(%x), d(%d)\n", x, active_node->parent, active_node, active_node->depth);
-				fflush(stdout);
-				free_node(active_node);
-			}
+			free_node(active_node);
 			mark_expored(active_node);
 			search_metadata.active_depth--;
 			active_node = active_node->parent;
 			continue;
 		}
 
-		search_metadata.active_depth++;
 		active_node->last_searched_child--;
+		if ((**active_node->last_searched_child).score_metadata.team_score > 1 ||
+			(**active_node->last_searched_child).score > best_score)
+		{
+			mark_expored(active_node);
+			free_node(active_node);
+			search_metadata.active_depth--;
+			active_node = active_node->parent;
+			continue;
+		}
+		search_metadata.active_depth++;
 		active_node = *active_node->last_searched_child;
 	}
 
